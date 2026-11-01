@@ -339,6 +339,7 @@ type ChoreReq struct {
 	Description          *string                       `json:"description" binding:"omitempty"`
 	SubTasks             *[]stModel.SubTask            `json:"subTasks" binding:"omitempty,dive"`
 	RequireApproval      bool                          `json:"requireApproval" binding:"omitempty"`
+	TargetCount          *int                          `json:"targetCount" binding:"omitempty"`
 	IsPrivate            *bool                         `json:"isPrivate" binding:"omitempty"`
 	ProjectID            *int                          `json:"projectId" binding:"omitempty"`
 	// SectionID places a new chore directly into one of projectId's board
@@ -588,6 +589,8 @@ func (h *Handler) CreateChore(c *gin.Context) {
 		IsPrivate:              *choreReq.IsPrivate,
 		ProjectID:              choreReq.ProjectID,
 		SectionID:              sectionID,
+		TargetCount:            normalizeTargetCount(choreReq.TargetCount),
+		RemainingCount:         normalizeTargetCount(choreReq.TargetCount),
 		// SubTasks removed to prevent duplicate creation - handled by UpdateSubtask call below
 		// it's need custom logic to handle subtask creation as we send negative ids sometimes when we creating parent child releationship
 		// when the subtask is not yet created
@@ -933,6 +936,7 @@ func (h *Handler) EditChore(c *gin.Context) {
 		ProjectID:              choreReq.ProjectID,
 		Status:                 oldChore.Status,
 	}
+	updatedChore.TargetCount, updatedChore.RemainingCount = editedCounter(oldChore, choreReq.TargetCount)
 
 	assigneeIDs := make([]int, 0, len(choreReq.Assignees))
 	for _, assignee := range choreReq.Assignees {
@@ -2315,6 +2319,9 @@ type CompleteChoreReq struct { // TODO: Remove "Note" in future.
 	CompletedBy   *int           `json:"completedBy"`                    // The completed by only can be populated by the admin or super user.
 	CompletedDate *time.Time     `json:"completedTime"`                  // Completion date in RFC3339 format (defaults to now).
 	ActionOptions *ActionOptions `json:"actionOptions"`
+	// Count is the amount of progress made on a counted chore (TargetCount set).
+	// Omitted means "complete everything that remains". Ignored for regular chores.
+	Count *int `json:"count"`
 }
 
 // endregion
@@ -2445,6 +2452,41 @@ func (h *Handler) CompleteChore(c *gin.Context) {
 		}
 		completedBy = *req.CompletedBy
 	}
+	// Counted chores: record partial progress without completing the chore.
+	if chore.TargetCount != nil {
+		applied, remaining, cerr := applyCounterProgress(chore, req.Count)
+		if cerr != nil {
+			c.JSON(400, gin.H{"error": cerr.Error()})
+			return
+		}
+		if remaining > 0 {
+			if err := h.choreRepo.UpdateRemainingCount(c, chore, remaining); err != nil {
+				logger.Error("Failed to update remaining count", "error", err)
+				c.JSON(500, gin.H{"error": "Error updating progress"})
+				return
+			}
+			updatedChore, err := h.choreRepo.GetChore(c, id, effectiveUser.ID, actualUser.CircleID)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "Failed to retrieve chore"})
+				return
+			}
+			if h.realTimeService != nil {
+				h.realTimeService.GetEventBroadcaster().BroadcastChoreUpdated(updatedChore, &effectiveUser.User, map[string]interface{}{
+					"remainingCount": remaining,
+					"updatedBy":      actualUser.ID,
+					"updatedAt":      time.Now().UTC(),
+				}, nil)
+			}
+			c.JSON(200, gin.H{
+				"res":     updatedChore,
+				"message": fmt.Sprintf("Recorded %d, %d remaining", applied, remaining),
+			})
+			return
+		}
+		// remaining == 0 falls through to a normal full completion, which resets
+		// the counter back to TargetCount for the next occurrence.
+	}
+
 	var nextDueDate *time.Time
 	if chore.FrequencyType == "adaptive" {
 		history, err := h.choreRepo.GetChoreHistoryWithLimit(c, chore.ID, 5)

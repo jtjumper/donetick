@@ -93,6 +93,10 @@ type Chore struct {
 	BoardPosition          int                        `json:"boardPosition" gorm:"column:board_position;not null;default:0"`                          // Ordering of the chore within its section, shared by every viewer of the project
 	SyncVersion            int64                      `json:"syncVersion" gorm:"column:sync_version;not null;default:0;index;index:idx_chores_circle_sync_version,priority:2"`
 	Attachments            []storageModel.StorageFile `json:"attachments,omitempty" gorm:"-"`
+	// Counter support (partial completion). Both are nil for regular chores,
+	// so existing rows are unaffected by the AutoMigrate-added nullable columns.
+	TargetCount    *int `json:"targetCount,omitempty" gorm:"column:target_count"`       // Original count, e.g. 30 for "Pick up 30 items"
+	RemainingCount *int `json:"remainingCount,omitempty" gorm:"column:remaining_count"` // How many are still left in the current occurrence
 }
 
 type Status int8

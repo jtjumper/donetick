@@ -972,6 +972,10 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
 		choreUpdates["next_due_date"] = dueDate
 		choreUpdates["status"] = chModel.ChoreStatusNoStatus
 		choreUpdates["sync_version"] = nextVersion
+		if chore.TargetCount != nil {
+			// Reset the counter for the next occurrence of a recurring chore.
+			choreUpdates["remaining_count"] = *chore.TargetCount
+		}
 
 		switch {
 		case dueDate != nil:
@@ -1758,4 +1762,17 @@ func (r *ChoreRepository) UndoChoreAction(c context.Context, choreID int, histor
 
 		return nil
 	})
+}
+
+// UpdateRemainingCount stores partial progress on a counted chore.
+func (r *ChoreRepository) UpdateRemainingCount(c context.Context, chore *chModel.Chore, remaining int) error {
+	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(c).Model(&chModel.Chore{}).Where("id = ?", chore.ID).Updates(map[string]interface{}{
+		"remaining_count": remaining,
+		"sync_version":    nextVersion,
+		"updated_at":      time.Now().UTC(),
+	}).Error
 }
